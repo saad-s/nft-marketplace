@@ -1,0 +1,15 @@
+[project]
+name = "cube-permutations"
+requirements = []
+costs_version = 1
+[contracts.cube-permutations]
+path = "contracts/cube-permutations.clar"
+depends_on = ["sip-009-nft-trait"]
+
+[contracts.market]
+path = "contracts/market.clar"
+depends_on = []
+
+[contracts.sip-009-nft-trait]
+path = "contracts/sip-009-nft-trait.clar"
+depends_on = []
