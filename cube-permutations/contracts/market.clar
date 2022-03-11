@@ -1,12 +1,6 @@
 ;; market place for sip-009 tokens 
 ;; payment can be made using stx or SIP-010 tokens 
-
-(define-trait sip009-transfer-trait
-	(
-        (get-owner (uint) (response (optional principal) uint))
-		(transfer (uint principal principal) (response bool uint))
-	)
-)
+(use-trait sip009-tradable 'ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM.sip-009-nft-trait.nft-trait)
 
 (define-trait sip010-transfer-trait
 	(
@@ -65,32 +59,36 @@
     (map-get? max-offer id)
 )
 
-(define-private (transfer-tradable-to-escrow (tradables <sip009-transfer-trait>) (tradable-id uint))
+(define-private (transfer-tradable-to-escrow (tradables <sip009-tradable>) (tradable-id uint))
     (contract-call? tradables transfer tradable-id tx-sender contract)
 )
 
-(define-private (transfer-tradable-from-escrow (tradables <sip009-transfer-trait>) (tradable-id uint) (owner principal))
+(define-private (transfer-tradable-from-escrow (tradables <sip009-tradable>) (tradable-id uint) (owner principal))
     (as-contract (contract-call? tradables transfer tradable-id contract owner))
 )
 
-(define-public (put-on-sale (sip009-trait <sip009-transfer-trait>) (item-id uint) (min-price uint) (till-height uint)) 
-    (let
-        (
-            (owner (unwrap! (unwrap! (contract-call? sip009-trait get-owner item-id) err-no-item) err-no-item))
-            (id (var-get bid-id))
+(define-public (put-on-sale (sip009-trait <sip009-tradable>) (item-id uint) (min-price uint) (till-height uint) (key (string-ascii 80))) 
+    (begin
+        (asserts! (is-eq (try! (contract-call? .dao get-contract-identifier key)) (contract-of sip009-trait)) err-invalid-contract)
+        (let
+            (
+                (owner (unwrap! (unwrap! (contract-call? sip009-trait get-owner item-id) err-no-item) err-no-item))
+                (id (var-get bid-id))
+                (item-contract (contract-of sip009-trait))
+            )
+            (asserts! (is-eq owner tx-sender) err-unauthorized)
+            (asserts! (> min-price u0) err-invalid-price)
+            (asserts! (< block-height till-height) err-sale-expired)
+            (map-set item-info id {item-owner: owner, item-id: item-id, item-contract: item-contract})
+            (if (map-insert auction {item-owner: owner, item-id: item-id, item-contract: item-contract} 
+                {min-price: min-price, duration: till-height, bid-id: id}) 
+                (begin 
+                    (var-set bid-id (+ u1 id))
+                    (ok id))
+                err-duplicate
+            )
         )
-        (asserts! (is-eq owner tx-sender) err-unauthorized)
-        (asserts! (> min-price u0) err-invalid-price)
-        (asserts! (< block-height till-height) err-sale-expired)
-        (map-set item-info id {item-owner: owner, item-id: item-id, item-contract: (contract-of sip009-trait)})
-        (if (map-insert auction {item-owner: owner, item-id: item-id, item-contract: (contract-of sip009-trait)} 
-            {min-price: min-price, duration: till-height, bid-id: id}) 
-            (begin 
-                (var-set bid-id (+ u1 id))
-                (ok id))
-            err-duplicate
-        )
-    )
+    )   
 )
 
 (define-public (cancel-sale (id uint)) 
@@ -119,24 +117,26 @@
 )
 
 ;; complete an auction, when duration expires 
-(define-public (complete-auction (trait <sip009-transfer-trait>) (id uint)) 
-    (let 
-        (
-            (item-details (unwrap! (map-get? item-info id) err-invalid-bid-id))
-            (auction-info (unwrap! (get-auction-info id) err-invalid-bid-id))
-            (offer-info (unwrap! (get-max-offer id) err-no-offers))
-            (bidder (get bidder offer-info))
+(define-public (complete-auction (trait <sip009-tradable>) (id uint) (key (string-ascii 80))) 
+    (begin 
+        (asserts! (is-eq (try! (contract-call? .dao get-contract-identifier key)) (contract-of trait)) err-invalid-contract)
+        (let 
+            (
+                (item-details (unwrap! (map-get? item-info id) err-invalid-bid-id))
+                (auction-info (unwrap! (get-auction-info id) err-invalid-bid-id))
+                (offer-info (unwrap! (get-max-offer id) err-no-offers))
+                (bidder (get bidder offer-info))
+            )
+            (asserts! (is-eq (contract-of trait) (get item-contract item-details)) err-invalid-contract)
+            (asserts! (> block-height (get duration auction-info)) err-sale-not-expired)
+            (map-delete auction item-details)
+            (map-delete item-info id)
+            (map-delete offers {bidder: bidder, bid-id: id})
+            (map-delete max-offer id)
+            (try! (as-contract (stx-transfer? (get offer offer-info) contract (get item-owner item-details))))
+            (ok (try! (transfer-tradable-from-escrow trait (get item-id item-details) bidder)))
         )
-        (asserts! (is-eq (contract-of trait) (get item-contract item-details)) err-invalid-contract)
-        (asserts! (> block-height (get duration auction-info)) err-sale-not-expired)
-        (map-delete auction item-details)
-        (map-delete item-info id)
-        (map-delete offers {bidder: bidder, bid-id: id})
-        (map-delete max-offer id)
-        (try! (as-contract (stx-transfer? (get offer offer-info) contract (get item-owner item-details))))
-        (try! (transfer-tradable-from-escrow trait (get item-id item-details) bidder))
-        (ok true)
-    )
+    ) 
 )
 
 (define-public (accept-offer) 
